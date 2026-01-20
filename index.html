@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Reflect Master - Final Log Board</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        :root { --cell: 60px; --red: #FF3B30; --blue: #007AFF; }
+        body { font-family: 'Pretendard', sans-serif; display: flex; flex-direction: column; align-items: center; background: #f8f9fa; margin: 0; padding: 20px; }
+        .panel { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); margin-bottom: 15px; text-align: center; width: 100%; max-width: 500px; }
+        table { border-collapse: collapse; background: #fff; border: 3px solid #333; margin: 20px auto; }
+        td { width: var(--cell); height: var(--cell); border: 1px solid #ddd; position: relative; padding: 0; }
+        .edge { background: #f1f3f5; font-weight: bold; text-align: center; font-size: 14px; color: #495057; border: 1px solid #adb5bd !important; }
+        .corner { background: #dee2e6; border: 1px solid #adb5bd !important; }
+        .light-source { background: #FFD43B !important; }
+        .light-source::after { content: '💡'; display: block; font-size: 22px; text-align: center; line-height: var(--cell); }
+        .mirror-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .mirror-line { stroke-width: 6; stroke-linecap: butt; }
+        #timer { font-size: 2.5rem; font-weight: bold; font-family: monospace; margin: 10px 0; color: #333; height: 1.2em; }
+        .controls { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+        input, button { padding: 10px; border-radius: 8px; border: 1px solid #ddd; font-size: 16px; }
+        button { background: #333; color: white; cursor: pointer; font-weight: bold; border: none; transition: 0.2s; }
+        button:hover { background: #000; }
+        .coord-label { position: absolute; font-size: 10px; color: #bbb; top: 2px; left: 3px; z-index: 5; }
+        .log-container { margin-top:15px; text-align: left; max-height: 400px; overflow-y: auto; border-top: 2px solid #eee; padding-top: 10px; width: 100%; }
+        .log-item { padding: 10px; border-bottom: 1px solid #f1f1f1; font-size: 15px; display: flex; align-items: center; line-height: 1.4; }
+        .log-item b { color: #333; font-weight: 600; margin-right: 8px; }
+        .log-item .ans-tag { background: #f1f3f5; padding: 2px 8px; border-radius: 4px; font-weight: bold; color: #007AFF; }
+        .log-item i { color: #888; font-style: normal; margin-left: auto; font-family: monospace; }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h1 style="margin:0 0 10px 0;">Reflect Master</h1>
+        <div class="controls">
+            <input type="text" id="nick" value="플레이어" style="width:80px;">
+            <input type="number" id="lv_num" value="1" min="1" max="100" style="width:60px;">
+            <button onclick="loadProblem()">문제 시작</button>
+        </div>
+        <div id="timer">00:00.00</div>
+    </div>
+
+    <div id="grid-target"></div>
+
+    <div class="panel">
+        <div style="display: flex; gap: 5px; justify-content: center;">
+            <input type="text" id="ans_input" placeholder="답 입력 (예: 3 5 12)" style="flex: 1;">
+            <button onclick="submitRecord()" style="background:#007AFF;">제출</button>
+        </div>
+        <div class="log-container" id="log-list">
+            <p style="color:#999; text-align:center;">문제를 선택하고 시작하세요.</p>
+        </div>
+    </div>
+
+    <script>
+        // Firebase 설정
+        const firebaseConfig = {
+            apiKey: "AIzaSyDP7WJoqi9hWXO27KaeY9Lvitj-5-E0j5Y",
+            authDomain: "bsar5-d7818.firebaseapp.com",
+            databaseURL: "https://bsar5-d7818-default-rtdb.firebaseio.com",
+            projectId: "bsar5-d7818",
+            storageBucket: "bsar5-d7818.firebasestorage.app",
+            messagingSenderId: "377629207721",
+            appId: "1:377629207721:web:8b893496c0ac1749890db8"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        const rows = "가나다라마바사아자차카타파하";
+        const cols = "ABCDEFGHIJKLMN";
+        let currentProb = null, timerIdx = null, startT = 0;
+
+        function getProblem(num) {
+            const size = 5 + Math.floor((num-1)/20); 
+            let s = num * 999;
+            return generateProblem(size, s);
+        }
+
+        function generateProblem(size, s) {
+            let mirrors = {};
+            let cells = []; for(let r=0; r<size; r++) for(let c=0; c<size; c++) cells.push({r,c});
+            cells.sort(() => Math.sin(s++) - 0.5);
+            for(let i=0; i<Math.floor(size*size*0.45); i++) {
+                mirrors[`${cells[i].r},${cells[i].c}`] = { 
+                    type: Math.sin(s++) > 0 ? 'f' : 'b', 
+                    color: Math.sin(s++) > 0.7 ? 'blue' : 'red' 
+                };
+            }
+            let start = Math.floor(((Math.sin(s++)+1)/2) * (size * 4)) + 1;
+            return { size, start, mirrors };
+        }
+
+        function loadProblem() {
+            const num = document.getElementById('lv_num').value;
+            currentProb = getProblem(num);
+            drawGrid(currentProb.size);
+            listenToLogs(num);
+            
+            if(timerIdx) clearInterval(timerIdx);
+            startT = Date.now();
+            timerIdx = setInterval(updateTimer, 50);
+            document.getElementById('ans_input').value = "";
+        }
+
+        function drawGrid(s) {
+            let h = '<table>';
+            for(let r=-1; r<=s; r++) {
+                h += '<tr>';
+                for(let c=-1; c<=s; c++) {
+                    let e = getEdgeID(r, c, s);
+                    if(r===-1||r===s||c===-1||c===s) {
+                        if((r===-1||r===s)&&(c===-1||c===s)) h += '<td class="corner"></td>';
+                        else h += `<td class="edge ${e===currentProb.start?'light-source':''}">${e||''}</td>`;
+                    } else {
+                        let m = currentProb.mirrors[`${r},${c}`];
+                        let label = `<span class="coord-label">${rows[r]}${cols[c]}</span>`;
+                        let mirrorHtml = '';
+                        if(m) {
+                            const color = m.color === 'red' ? 'var(--red)' : 'var(--blue)';
+                            const x1 = m.type === 'f' ? '100' : '0';
+                            const y1 = '0';
+                            const x2 = m.type === 'f' ? '0' : '100';
+                            const y2 = '100';
+                            mirrorHtml = `<svg class="mirror-svg" viewBox="0 0 100 100" preserveAspectRatio="none"><line x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%" class="mirror-line" stroke="${color}" /></svg>`;
+                        }
+                        h += `<td>${label}${mirrorHtml}</td>`;
+                    }
+                }
+                h += '</tr>';
+            }
+            document.getElementById('grid-target').innerHTML = h + '</table>';
+        }
+
+        function getEdgeID(r, c, s) {
+            if(r===-1 && c>=0 && c<s) return c+1;
+            if(c===s && r>=0 && r<s) return s+r+1;
+            if(r===s && c>=0 && c<s) return s*2+(s-c);
+            if(c===-1 && r>=0 && r<s) return s*3+(s-r);
+            return null;
+        }
+
+        function updateTimer() {
+            let d = Date.now()-startT;
+            let ms = String(d%1000).padStart(3,'0').slice(0,2);
+            let s = String(Math.floor(d/1000)%60).padStart(2,'0');
+            let m = String(Math.floor(d/60000)).padStart(2,'0');
+            const tEl = document.getElementById('timer');
+            if(tEl) tEl.innerText = `${m}:${s}.${ms}`;
+        }
+
+        function submitRecord() {
+            const nick = document.getElementById('nick').value;
+            const ans = document.getElementById('ans_input').value;
+            const time = document.getElementById('timer').innerText;
+            const num = document.getElementById('lv_num').value;
+            if(!ans.trim()) return;
+            db.ref(`live_logs/p${num}`).push({
+                n: nick, a: ans, t: time, ts: firebase.database.ServerValue.TIMESTAMP
+            });
+            document.getElementById('ans_input').value = "";
+        }
+
+        function listenToLogs(num) {
+            db.ref(`live_logs/p${num}`).orderByChild('ts').limitToLast(100).on('value', snap => {
+                const listEl = document.getElementById('log-list');
+                let h = "<strong>📋 실시간 기록 (최신순)</strong><br>";
+                let items = [];
+                snap.forEach(c => { items.push(c.val()); });
+                items.reverse();
+                items.forEach(item => {
+                    h += `<div class="log-item"><b>${item.n}</b> <span class="ans-tag">(${item.a})</span> <i>${item.t}</i></div>`;
+                });
+                listEl.innerHTML = h || "아직 기록이 없습니다.";
+            });
+        }
+    </script>
+</body>
+</html>
