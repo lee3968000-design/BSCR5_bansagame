@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reflect Master - 표준 통합 버전</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        :root { --cell: 50px; --red: #FF3B30; --blue: #007AFF; }
+        body { font-family: -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; background: #f0f2f5; margin: 0; padding: 20px; }
+        .panel { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); margin-bottom: 15px; text-align: center; width: 100%; max-width: 450px; }
+        table { border-collapse: collapse; background: #fff; border: 2px solid #333; margin: 0 auto; }
+        td { width: var(--cell); height: var(--cell); border: 1px solid #ddd; position: relative; padding: 0; }
+        .edge { background: #e9ecef; font-weight: bold; text-align: center; font-size: 13px; color: #444; }
+        .corner { background: #dee2e6; }
+        .light-source { background: #FFD43B !important; color: #000; }
+        .light-source::after { content: '💡'; display: block; font-size: 16px; }
+        .mirror { width: 100%; height: 100%; position: absolute; top:0; left:0; }
+        .mirror.f { background: linear-gradient(to top right, transparent 45%, var(--c) 45%, var(--c) 55%, transparent 55%); }
+        .mirror.b { background: linear-gradient(to bottom right, transparent 45%, var(--c) 45%, var(--c) 55%, transparent 55%); }
+        .red { --c: var(--red); } .blue { --c: var(--blue); }
+        #timer { font-size: 2.2rem; font-weight: bold; margin: 5px 0; font-family: monospace; }
+        input, select, button { padding: 8px; border-radius: 6px; border: 1px solid #ddd; margin: 3px; }
+        button { background: #333; color: white; border: none; cursor: pointer; font-weight: bold; padding: 8px 15px; }
+        .rank-item { display: flex; justify-content: space-between; padding: 4px; border-bottom: 1px solid #eee; font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h2 style="margin:0 0 10px 0;">Reflect Master</h2>
+        <input type="text" id="nick" placeholder="닉네임" value="플레이어" style="width:80px">
+        <select id="lv"><option value="5">1단계</option><option value="6">2단계</option><option value="7">3단계</option><option value="8">4단계</option><option value="9">5단계</option></select>
+        <input type="number" id="p_num" value="1" min="1" max="20" style="width:50px">
+        <button onclick="startGame()">문제 생성 & 시작</button>
+        <div id="timer">00:00.00</div>
+    </div>
+
+    <div id="grid-target"></div>
+
+    <div class="panel" style="margin-top:15px">
+        <input type="text" id="ans_input" placeholder="정답 (예: 3 12)" style="width:160px">
+        <button onclick="checkAns()" style="background:#007AFF;">제출</button>
+        <div id="rank-list" style="margin-top:10px; text-align: left;"></div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyDP7WJoqi9hWXO27KaeY9Lvitj-5-E0j5Y",
+            authDomain: "bsar5-d7818.firebaseapp.com",
+            databaseURL: "https://bsar5-d7818-default-rtdb.firebaseio.com",
+            projectId: "bsar5-d7818",
+            storageBucket: "bsar5-d7818.firebasestorage.app",
+            messagingSenderId: "377629207721",
+            appId: "1:377629207721:web:8b893496c0ac1749890db8"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let prob = { size: 0, mirrors: {}, ans: [], start: 0, hitCount: 0 };
+        let timer, startT;
+
+        function seededRand(s) { var x = Math.sin(s) * 10000; return x - Math.floor(x); }
+
+        function getStartCoord(n, s) {
+            if(n <= s) return {r:0, c:n-1, dr:1, dc:0};              // 1~n: 상->하
+            if(n <= s*2) return {r:n-s-1, c:s-1, dr:0, dc:-1};      // n+1~2n: 우->좌
+            if(n <= s*3) return {r:s-1, c:s-(n-s*2), dr:-1, dc:0};  // 2n+1~3n: 하->상
+            return {r:s-(n-s*3), c:0, dr:0, dc:1};                  // 3n+1~4n: 좌->우
+        }
+
+        function getEdgeID(r, c, s) {
+            if(r === -1 && c >= 0 && c < s) return c + 1;
+            if(c === s && r >= 0 && r < s) return s + r + 1;
+            if(r === s && c >= 0 && c < s) return s * 2 + (s - c);
+            if(c === -1 && r >= 0 && r < s) return s * 3 + (s - r);
+            return null;
+        }
+
+        function startGame() {
+            const size = parseInt(document.getElementById('lv').value);
+            const num = parseInt(document.getElementById('p_num').value);
+            const seedBase = (size * 1000) + num;
+
+            let success = false;
+            let attemptSeed = seedBase;
+            
+            while(!success) {
+                genProb(size, attemptSeed++);
+                if(prob.hitCount >= 3 && prob.ans.length > 0) success = true;
+            }
+
+            drawGrid(size);
+            loadRanks(size, num);
+            clearInterval(timer);
+            startT = Date.now();
+            timer = setInterval(updateTimer, 50);
+        }
+
+        function genProb(size, seed) {
+            let s = seed; prob.mirrors = {}; prob.size = size; prob.ans = []; prob.hitCount = 0;
+            
+            // 거울 배치 (파란색 1~10개 제한)
+            const totalCells = size * size;
+            const mirrorCount = Math.floor(totalCells * 0.4);
+            let blueCount = 0;
+            let cells = [];
+            for(let r=0; r<size; r++) for(let c=0; c<size; c++) cells.push({r,c});
+            cells.sort(() => seededRand(s++) - 0.5);
+
+            for(let i=0; i<mirrorCount; i++) {
+                let isBlue = (blueCount < 10 && seededRand(s++) > 0.7);
+                if(isBlue) blueCount++;
+                prob.mirrors[`${cells[i].r},${cells[i].c}`] = {
+                    type: seededRand(s++) > 0.5 ? 'f' : 'b',
+                    color: isBlue ? 'blue' : 'red'
+                };
+            }
+
+            prob.start = Math.floor(seededRand(s++) * (size * 4)) + 1;
+            prob.ans = solveWithValidation(prob.start);
+        }
+
+        function solveWithValidation(startNum) {
+            let res = new Set(), s = prob.size, hits = 0, isLoop = false;
+            let visited = new Set(); // 무한루프 체크용: "r,c,dr,dc"
+            let p = getStartCoord(startNum, s);
+
+            function trace(r, c, dr, dc) {
+                while(r>=0 && r<s && c>=0 && c<s) {
+                    let state = `${r},${c},${dr},${dc}`;
+                    if(visited.has(state)) { isLoop = true; return; }
+                    visited.add(state);
+
+                    let m = prob.mirrors[`${r},${c}`];
+                    if(m) {
+                        hits++;
+                        if(m.color === 'blue') trace(r+dr, c+dc, dr, dc); // 분기(관통)
+                        if(m.type === 'f') { let t=dr; dr=-dc; dc=-t; } // / 반사
+                        else { let t=dr; dr=dc; dc=t; } // \ 반사
+                    }
+                    r += dr; c += dc;
+                }
+                let end = getEdgeID(r, c, s);
+                if(end && end !== startNum) res.add(end);
+            }
+
+            trace(p.r, p.c, p.dr, p.dc);
+            prob.hitCount = hits;
+            return isLoop ? [] : Array.from(res);
+        }
+
+        function drawGrid(s) {
+            let h = '<table>';
+            for(let r=-1; r<=s; r++) {
+                h += '<tr>';
+                for(let c=-1; c<=s; c++) {
+                    let e = getEdgeID(r, c, s);
+                    if(r===-1 || r===s || c===-1 || c===s) {
+                        if((r===-1||r===s) && (c===-1||c===s)) h += '<td class="corner"></td>';
+                        else h += `<td class="edge ${e===prob.start?'light-source':''}">${e||''}</td>`;
+                    } else {
+                        let m = prob.mirrors[`${r},${c}`];
+                        h += `<td>${m?`<div class="mirror ${m.type} ${m.color}"></div>`:''}</td>`;
+                    }
+                }
+                h += '</tr>';
+            }
+            document.getElementById('grid-target').innerHTML = h + '</table>';
+        }
+
+        function updateTimer() {
+            let d = Date.now()-startT;
+            let ms = String(d%1000).padStart(3,'0').slice(0,2);
+            let s = String(Math.floor(d/1000)%60).padStart(2,'0');
+            let m = String(Math.floor(d/60000)).padStart(2,'0');
+            document.getElementById('timer').innerText = `${m}:${s}.${ms}`;
+        }
+
+        function checkAns() {
+            let u = document.getElementById('ans_input').value.trim().split(/\s+/).map(Number).sort().join();
+            let a = prob.ans.sort((x,y)=>x-y).join();
+            if(u === a) {
+                clearInterval(timer);
+                alert("정답! 기록: " + document.getElementById('timer').innerText);
+                saveRecord();
+            } else alert("오답입니다!");
+        }
+
+        function saveRecord() {
+            const lv = document.getElementById('lv').value, num = document.getElementById('p_num').value;
+            db.ref(`ranks/lv${lv}/p${num}`).push({
+                n: document.getElementById('nick').value,
+                t: document.getElementById('timer').innerText,
+                ts: firebase.database.ServerValue.TIMESTAMP
+            });
+        }
+
+        function loadRanks(lv, num) {
+            db.ref(`ranks/lv${lv}/p${num}`).orderByChild('t').limitToFirst(5).on('value', snap => {
+                let h = "<strong>🏆 실시간 TOP 5</strong>";
+                snap.forEach(c => { h += `<div class="rank-item"><span>${c.val().n}</span><b>${c.val().t}</b></div>`; });
+                document.getElementById('rank-list').innerHTML = h;
+            });
+        }
+    </script>
+</body>
+</html>
