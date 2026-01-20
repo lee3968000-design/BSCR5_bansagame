@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Reflect Master - 정식 버전</title>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-database.js"></script>
+    <style>
+        :root { --cell: 55px; --red: #FF3B30; --blue: #007AFF; }
+        body { font-family: 'Pretendard', sans-serif; display: flex; flex-direction: column; align-items: center; background: #f8f9fa; margin: 0; padding: 20px; }
+        .panel { background: white; padding: 15px; border-radius: 12px; box-shadow: 0 8px 20px rgba(0,0,0,0.08); margin-bottom: 15px; text-align: center; width: 100%; max-width: 550px; }
+        table { border-collapse: collapse; background: #fff; border: 2px solid #333; margin: 20px auto; }
+        td { width: var(--cell); height: var(--cell); border: 1px solid #ddd; position: relative; padding: 0; }
+        .edge { background: #f1f3f5; font-weight: bold; text-align: center; font-size: 14px; color: #495057; }
+        .corner { background: #dee2e6; }
+        .light-source { background: #FFD43B !important; }
+        .light-source::after { content: '💡'; display: block; font-size: 20px; }
+        .mirror { width: 100%; height: 100%; position: absolute; }
+        .mirror.f { background: linear-gradient(to top right, transparent 44%, var(--c) 44%, var(--c) 56%, transparent 56%); }
+        .mirror.b { background: linear-gradient(to bottom right, transparent 44%, var(--c) 44%, var(--c) 56%, transparent 56%); }
+        .red { --c: var(--red); } .blue { --c: var(--blue); }
+        #timer { font-size: 2.5rem; font-weight: bold; font-family: monospace; margin: 10px 0; color: #333; }
+        button { background: #333; color: white; border: none; padding: 12px 24px; cursor: pointer; font-weight: bold; border-radius: 8px; transition: 0.2s; }
+        button:hover { background: #000; }
+        .rank-item { display: flex; justify-content: space-between; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <div class="panel">
+        <h1 style="margin:0 0 10px 0;">Reflect Master</h1>
+        <div>
+            <input type="text" id="nick" placeholder="닉네임" value="플레이어" style="width:80px; padding:10px; border-radius:6px; border:1px solid #ddd;">
+            <select id="lv" style="padding:10px; border-radius:6px; border:1px solid #ddd;">
+                <option value="5">1단계 (5x5)</option>
+                <option value="6">2단계 (6x6)</option>
+                <option value="7">3단계 (7x7)</option>
+                <option value="8">4단계 (8x8)</option>
+                <option value="9">5단계 (9x9)</option>
+            </select>
+            <input type="number" id="p_num" value="1" min="1" max="20" style="width:50px; padding:10px; border-radius:6px; border:1px solid #ddd;">
+            <button onclick="startGame()">문제 생성</button>
+        </div>
+        <div id="timer">00:00.00</div>
+    </div>
+    <div id="grid-target"></div>
+    <div class="panel" style="margin-top:15px">
+        <input type="text" id="ans_input" placeholder="정답 (예: 6 20)" style="width:180px; padding:12px; font-size:16px; border:2px solid #333; border-radius:8px;">
+        <button onclick="checkAns()" style="background:#007AFF;">제출</button>
+        <div id="rank-list" style="margin-top:15px; text-align: left;"></div>
+    </div>
+
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyDP7WJoqi9hWXO27KaeY9Lvitj-5-E0j5Y",
+            authDomain: "bsar5-d7818.firebaseapp.com",
+            databaseURL: "https://bsar5-d7818-default-rtdb.firebaseio.com",
+            projectId: "bsar5-d7818",
+            storageBucket: "bsar5-d7818.firebasestorage.app",
+            messagingSenderId: "377629207721",
+            appId: "1:377629207721:web:8b893496c0ac1749890db8"
+        };
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+
+        let prob = { size: 0, mirrors: {}, ans: [], start: 0 };
+        let timer, startT;
+        const rows = "가나다라마바사아자차카타파하";
+        const cols = "ABCDEFGHIJKLMN";
+
+        function seededRand(s) { var x = Math.sin(s) * 10000; return x - Math.floor(x); }
+
+        function startGame() {
+            const size = parseInt(document.getElementById('lv').value);
+            const num = parseInt(document.getElementById('p_num').value);
+            let s = (size * 77) + num;
+
+            let valid = false;
+            while(!valid) {
+                genProb(size, s++);
+                if(prob.ans.length > 0) valid = true;
+            }
+
+            drawGrid(size);
+            loadRanks(size, num);
+            clearInterval(timer);
+            startT = Date.now();
+            timer = setInterval(updateT, 50);
+            document.getElementById('ans_input').value = "";
+        }
+
+        function genProb(size, seed) {
+            let s = seed; prob.mirrors = {}; prob.size = size;
+            const density = 0.45;
+            const mCount = Math.floor(size * size * density);
+            let cells = []; for(let r=0; r<size; r++) for(let c=0; c<size; c++) cells.push({r,c});
+            cells.sort(() => seededRand(s++) - 0.5);
+
+            let blueC = 0;
+            for(let i=0; i<mCount; i++) {
+                let isB = (blueC < 10 && seededRand(s++) > 0.7);
+                if(isB) blueC++;
+                prob.mirrors[`${cells[i].r},${cells[i].c}`] = {
+                    type: seededRand(s++) > 0.5 ? 'f' : 'b',
+                    color: isB ? 'blue' : 'red'
+                };
+            }
+
+            let found = false, attempts = 0;
+            while(!found && attempts < 100) {
+                let testStart = Math.floor(seededRand(s++) * (size * 4)) + 1;
+                let res = solve(testStart, size, prob.mirrors);
+                if(res.hits >= 3 && !res.loop && res.ans.length > 0) {
+                    prob.start = testStart; prob.ans = res.ans; found = true;
+                }
+                attempts++;
+            }
+            if(!found) prob.ans = [];
+        }
+
+        function solve(start, s, mirrors) {
+            let res = new Set(), hits = 0, isLoop = false, visited = new Set();
+            let p = getStart(start, s);
+            function trace(r, c, dr, dc) {
+                while(r>=0 && r<s && c>=0 && c<s) {
+                    let st = `${r},${c},${dr},${dc}`;
+                    if(visited.has(st)) { isLoop = true; return; }
+                    visited.add(st);
+                    let m = mirrors[`${r},${c}`];
+                    if(m) {
+                        hits++;
+                        if(m.color === 'blue') trace(r+dr, c+dc, dr, dc);
+                        if(m.type === 'f') { let t=dr; dr=-dc; dc=-t; }
+                        else { let t=dr; dr=dc; dc=t; }
+                    }
+                    r += dr; c += dc;
+                }
+                let e = getEdge(r, c, s); if(e && e !== start) res.add(e);
+            }
+            trace(p.r, p.c, p.dr, p.dc);
+            return { ans: Array.from(res).sort((a,b)=>a-b), hits, loop: isLoop };
+        }
+
+        function getStart(n, s) {
+            if(n<=s) return {r:0, c:n-1, dr:1, dc:0};
+            if(n<=s*2) return {r:n-s-1, c:s-1, dr:0, dc:-1};
+            if(n<=s*3) return {r:s-1, c:s-(n-s*2), dr:-1, dc:0};
+            return {r:s-(n-s*3), c:0, dr:0, dc:1};
+        }
+
+        function getEdge(r, c, s) {
+            if(r===-1 && c>=0 && c<s) return c+1;
+            if(c===s && r>=0 && r<s) return s+r+1;
+            if(r===s && c>=0 && c<s) return s*2+(s-c);
+            if(c===-1 && r>=0 && r<s) return s*3+(s-r);
+            return null;
+        }
+
+        function drawGrid(s) {
+            let h = '<table>';
+            for(let r=-1; r<=s; r++) {
+                h += '<tr>';
+                for(let c=-1; c<=s; c++) {
+                    let e = getEdge(r, c, s);
+                    if(r===-1||r===s||c===-1||c===s) {
+                        if((r===-1||r===s)&&(c===-1||c===s)) h += '<td class="corner"></td>';
+                        else h += `<td class="edge ${e===prob.start?'light-source':''}">${e||''}</td>`;
+                    } else {
+                        let m = prob.mirrors[`${r},${c}`];
+                        let label = `<span style="position:absolute; font-size:9px; color:#ddd; top:2px; left:2px; pointer-events:none;">${rows[r]}${cols[c]}</span>`;
+                        h += `<td>${label}${m?`<div class="mirror ${m.type} ${m.color}"></div>`:''}</td>`;
+                    }
+                }
+                h += '</tr>';
+            }
+            document.getElementById('grid-target').innerHTML = h + '</table>';
+        }
+
+        function updateT() {
+            let d = Date.now()-startT;
+            let ms = String(d%1000).padStart(3,'0').slice(0,2);
+            let s = String(Math.floor(d/1000)%60).padStart(2,'0');
+            let m = String(Math.floor(d/60000)).padStart(2,'0');
+            document.getElementById('timer').innerText = `${m}:${s}.${ms}`;
+        }
+
+        function checkAns() {
+            let u = document.getElementById('ans_input').value.trim().split(/\s+/).map(Number).sort((a,b)=>a-b).join();
+            let a = prob.ans.join();
+            if(u === a) {
+                clearInterval(timer);
+                alert("정답입니다! 기록: " + document.getElementById('timer').innerText);
+                save();
+            } else alert("오답입니다! 경로를 다시 확인해보세요.");
+        }
+
+        function save() {
+            const lv = document.getElementById('lv').value, num = document.getElementById('p_num').value;
+            db.ref(`ranks/lv${lv}/p${num}`).push({ n: document.getElementById('nick').value, t: document.getElementById('timer').innerText, ts: firebase.database.ServerValue.TIMESTAMP });
+        }
+
+        function loadRanks(lv, num) {
+            db.ref(`ranks/lv${lv}/p${num}`).orderByChild('t').limitToFirst(5).on('value', snap => {
+                let h = "<strong>🏆 실시간 TOP 5</strong>";
+                snap.forEach(c => { h += `<div class="rank-item"><span>${c.val().n}</span><b>${c.val().t}</b></div>`; });
+                document.getElementById('rank-list').innerHTML = h;
+            });
+        }
+    </script>
+</body>
+</html>
